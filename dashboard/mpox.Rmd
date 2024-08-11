@@ -1,0 +1,242 @@
+First, let's import some libraries
+```{r}
+library(dplyr)
+library(lubridate)
+library(data.table)
+library(zoo)
+```
+
+We will need function to smooth data.
+```{r}
+smooth <- function(data, order) {
+  n <- length(data)
+  span <- floor(order / 2)
+  new_data <- rep(0, length(data))
+  for (i in 1:n) {
+    curr_span <- min(c(i - 1, n - i, span))
+    new_data[i] <- mean(data[(i - curr_span):(i + curr_span)])
+  }
+  return(new_data)
+}
+```
+
+
+Now, read OWID data and make some transformations. We aggregate daily data into weekly and get differential values. 
+```{r}
+raw_data <- read.csv("./dashboard/owid-monkeypox-data.csv")
+
+# print(head(data.frame(weekly_accumulated_df), 100))
+# print(nrow(raw_data[is.na(raw_data$total_cases),]))
+
+countries <- c("Thailand", "China", "South Korea", "Japan")
+
+raw_data <- data.table(raw_data)
+raw_data <- raw_data[raw_data$location %in% countries, ]
+raw_data <- raw_data[, diff := total_cases - ifelse(row_number(total_cases) == 1, 0, shift(total_cases)), by = "location"]
+raw_data <- data.frame(raw_data)
+raw_data <- na.omit(raw_data)
+# print(raw_data[raw_data$location == "Africa",])
+raw_data$ds <- as.Date(raw_data$date)
+raw_data <- raw_data %>%
+  mutate(week_start = floor_date(ds, "week")) %>%
+  group_by(location, week_start) %>%
+  summarise(diff = sum(diff), total_cases = max(total_cases), date = first(week_start)) %>%
+  ungroup()
+raw_data <- data.frame(raw_data)
+raw_data$smoothed_diff <- smooth(raw_data$diff, 5)
+# print(raw_data[raw_data$location == "Brazil", ])
+# print(raw_data[raw_data$diff < 0,])
+```
+
+
+Here are WHO data. We transform it to the same format.
+
+```{r}
+countries <- c("Thailand", "China", "South Korea", "Japan")
+
+raw_data <- read.csv("./dashboard/who-monkeypox-data.csv")
+raw_data <- raw_data[raw_data$date_type == "Onset", ]
+raw_data[raw_data$country == "Republic of Korea", ]$country <- "South Korea"
+names(raw_data)[1] <- "location"
+raw_data$location <- as.character(raw_data$location)
+
+raw_data$date <- as.Date(raw_data$reference_date)
+start_date <- as.Date("2023-02-02")
+end_date <- as.Date("2023-12-28")
+complete_weeks <- seq(from = start_date, to = end_date, by = "week")
+locations <- as.character(unique(raw_data$location))
+complete_data <- expand.grid(date = complete_weeks, location = locations)
+raw_data <- merge(complete_data, raw_data, by = c("location", "date"), all.x = TRUE)
+raw_data$cases[is.na(raw_data$cases)] <- 0
+raw_data$diff <- raw_data$cases
+
+raw_data <- raw_data[raw_data$date >= start_date, ]
+raw_data <- raw_data[raw_data$date <= end_date, ]
+raw_data <- raw_data[raw_data$location %in% countries, ]
+
+raw_data <- raw_data %>%
+  group_by(location) %>%
+  arrange(date) %>%
+  mutate(total_cases = cumsum(cases)) %>%
+  ungroup()
+raw_data <- as.data.frame(raw_data)
+raw_data <- raw_data[order(raw_data$location, raw_data$date), ]
+rownames(raw_data) <- NULL
+raw_data$location <- as.character(raw_data$location)
+```
+
+```{r}
+# head(raw_data)
+options(max.print = 1000)
+print(raw_data[raw_data$location == "China", ])
+```
+
+
+Now we save transformed data into bunch of csv files. Each country has its own start and end dates, 
+so each would inevitably go into separate file.
+```{r}
+locations <- unique(raw_data$location)
+
+pdf(paste0("./dashboard/plot/data_plot.pdf"), height = 14, width = 16)
+# par(mfrow = c(length(locations) %/% 2, 2), oma = c(0.5, 2.5, 0.5, 0.5), mai = c(1.2, 0.5, 0.5, 0.5))
+par(mfrow = c(4, 1), oma = c(0.5, 2.5, 0.5, 0.5), mai = c(1.2, 0.5, 0.5, 0.5))
+letters <- c("A", "B", "C", "D", "E", "F", "G", "I", "J", "K", "L", "M", "N")
+
+for (i in 1:length(locations)) {
+  location <- locations[i]
+
+  selected_data_diff <- raw_data[raw_data$location == location, c("date", "diff")]
+  selected_data_cumm <- raw_data[raw_data$location == location, c("date", "total_cases")]
+  # selected_data_smoothed_diff <- raw_data[raw_data$location == location, c("date", "smoothed_diff")]
+
+  plot(
+    x = selected_data_diff$date,
+    y = selected_data_diff$diff,
+    col = "#005BBB",
+    # col = color_01,
+    lwd = 5,
+    # pch = 16,
+    # pch = shape_01,
+    # pch = 17,
+    type = "l",
+    # main = paste( colnames(proporions_all_locations_data_baseline)[compartment],  sep = ""),
+    main = location,
+    xlim = c(min(selected_data_diff$date), max(selected_data_diff$date)),
+    ylim = c(min(selected_data_diff$diff), max(selected_data_diff$diff)),
+    # ylim = c(0, y_max_value_current * 1.2  ),
+    # xlab = "Time",
+    xlab = "",
+    ylab = NA,
+    xaxt = "n",
+    yaxt = "n",
+    cex = 2.1,
+    cex.axis = 2.15,
+    cex.lab = 2.15,
+    cex.main = 2.35,
+    cex.sub = 2.1
+  )
+  mtext("Cases", side = 2, line = 3, cex = 1.55)
+  lines(
+    x = selected_data_diff$date,
+    y = selected_data_diff$diff,
+    col = "#005BBB",
+    # col = color_01,
+    lwd = 5,
+    pch = 19,
+    # pch = shape_01,
+    # pch = 17,
+    type = "p"
+  )
+
+  ytop = max(selected_data_diff$diff) * 1.01
+  ybottom = -0.01 * max(selected_data_diff$diff)
+  rect(
+    xleft = as.Date("2023-05-18"),
+    ybottom = ybottom,
+    xright = as.Date("2023-11-30"),
+    ytop = ytop,
+    col = rgb(0.5, 0.5, 0.5, 0.5),
+    border = NA
+  )
+  segments(
+    x0 = as.Date("2023-05-18"),
+    y0 = ybottom,
+    x1 = as.Date("2023-05-18"),
+    y1 = ytop,
+    col = "black",
+    lwd = 2,
+    lty = 2
+  )
+
+  segments(
+    x0 = as.Date("2023-11-30"),
+    y0 = ybottom,
+    x1 = as.Date("2023-11-30"),
+    y1 = ytop,
+    col = "black",
+    lwd = 2,
+    lty = 2
+  )
+
+  x_indexes_to_display <- seq(from = 1, to = length(selected_data_diff$date), by = 1)
+
+  x_tlab <- selected_data_diff$date[x_indexes_to_display]
+
+  # x_lablist <- substr(x = as.character(selected_data_diff$date[x_indexes_to_display]), start = 1, stop = 7)
+  x_lablist <- as.character(selected_data_diff$date[x_indexes_to_display])
+  axis(1, at = x_tlab, labels = FALSE)
+  text(x = x_tlab, y = par()$usr[3] - 0.05 * (par()$usr[4] - par()$usr[3]), labels = x_lablist, srt = 45, adj = 1, xpd = TRUE, cex=2.1)
+
+  y_min_value <- min(selected_data_diff$diff)
+  y_max_value <- max(selected_data_diff$diff)
+  y_tlab <- seq(from = y_min_value, to = y_max_value, by = (y_max_value - y_min_value) / 5)
+  y_lablist <- as.character(round(y_tlab, digits = 0))
+  axis(2, at = y_tlab, labels = y_lablist, cex.axis = 2.1)
+
+  par(xpd = NA)
+
+  di <- dev.size("in")
+  x <- grconvertX(c(0, di[1]), from = "in", to = "user")
+  y <- grconvertY(c(0, di[2]), from = "in", to = "user")
+
+  fig <- par("fig")
+  x <- x[1] + (x[2] - x[1]) * fig[1:2]
+  y <- y[1] + (y[2] - y[1]) * fig[3:4]
+
+  txt <- letters[i]
+  x <- x[1] + strwidth(txt, cex = 4) * 6 / 5
+  y <- y[2] - strheight(txt, cex = 4) * 4 / 5
+  text(x, y, txt, cex = 4)
+
+  names(selected_data_diff)[2] <- location
+  names(selected_data_cumm)[2] <- location
+  # names(selected_data_smoothed_diff)[2] <- location
+  write.csv(selected_data_diff, paste0("./dashboard/mpox_data/diff_", location, ".csv"), row.names = FALSE)
+  write.csv(selected_data_cumm, paste0("./dashboard/mpox_data/cumm_", location, ".csv"), row.names = FALSE)
+  # write.csv(selected_data_smoothed_diff, paste0("./dashboard/mpox_data/smoothed_diff_", location, ".csv"), row.names = FALSE)
+}
+
+dev.off()
+```
+
+We also need to output files for Dr. Chowell's model in the specific format:
+```{r}
+locations <- unique(raw_data$location)
+calibration_period <- 12
+forecast_horizon <- 4
+selected_len <- calibration_period + forecast_horizon
+# selected_len <- calibration_period
+for (location in locations) {
+  selected_data <- raw_data[raw_data$location == location, c("date", "total_cases")]
+  first_date <- min(selected_data$date)
+  last_date <- max(selected_data$date)
+  print(first_date)
+  print(last_date)
+  if (nrow(selected_data) > selected_len) {
+    for (last_idx in seq(selected_len, by = 1, length.out = (nrow(selected_data) - selected_len))) {
+      file_name <- paste0("./dashboard/mpox_data/chowell_input/", "cumulative-weekly-mpox-cases-", location, "-", format(selected_data$date[last_idx], "%m-%d-%Y"), ".txt")
+      write.table(selected_data$total_cases[1:last_idx], file_name, sep = "\n", row.names = FALSE, col.names = FALSE)
+    }
+  }
+}
+```
